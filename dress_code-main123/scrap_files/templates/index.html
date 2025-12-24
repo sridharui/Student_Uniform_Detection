@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Web Uniform Detector</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    header { margin-bottom: 20px; }
+    .card { border: 1px solid #ddd; padding: 16px; border-radius: 8px; max-width: 800px; }
+    .row { display: flex; gap: 16px; }
+    .col { flex: 1; }
+    img { max-width: 100%; border: 1px solid #eee; border-radius: 6px; }
+    .status { margin-top: 12px; padding: 8px; border-radius: 6px; }
+    .ok { color: #0a7f00; }
+    .bad { color: #b00020; }
+    .result { font-size: 18px; font-weight: bold; }sw
+    .hidden { display: none; }
+    .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .pill { display:inline-block; padding: 4px 8px; border-radius: 999px; background:#f4f4f4; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Web Uniform Detector</h1>
+    <p>Upload an image to check if the person is in complete uniform. Returns 1 (complete) or 0 (incomplete).</p>
+  </header>
+
+  <div class="card">
+    <form id="uploadForm">
+      <input type="file" name="file" id="fileInput" accept="image/*" required />
+      <button type="submit">Upload & Detect</button>
+    </form>
+
+    <div id="loading" class="hidden">Processing...</div>
+
+    <div id="resultContainer" class="hidden">
+      <p class="result">Result: <span id="numericResult">-</span></p>
+      <div id="status" class="status"></div>
+      <div class="row">
+        <div class="col">
+          <h3>Detections</h3>
+          <div id="detections" class="grid"></div>
+        </div>
+        <div class="col">
+          <h3>Processed Image</h3>
+          <img id="outputImg" alt="Processed result" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('uploadForm');
+    const loading = document.getElementById('loading');
+    const resultContainer = document.getElementById('resultContainer');
+    const numericResult = document.getElementById('numericResult');
+    const statusDiv = document.getElementById('status');
+    const detectionsDiv = document.getElementById('detections');
+    const outputImg = document.getElementById('outputImg');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fileInput = document.getElementById('fileInput');
+      const file = fileInput.files[0];
+      if (!file) return;
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      loading.classList.remove('hidden');
+      resultContainer.classList.add('hidden');
+      statusDiv.innerHTML = '';
+      detectionsDiv.innerHTML = '';
+      outputImg.removeAttribute('src');
+
+      try {
+        const resp = await fetch('/upload', { method: 'POST', body: formData });
+        const data = await resp.json();
+
+        loading.classList.add('hidden');
+        resultContainer.classList.remove('hidden');
+
+        // Show numeric result (1 or 0)
+        numericResult.textContent = data.result;
+        numericResult.className = data.result === 1 ? 'ok' : 'bad';
+
+        // Show status breakdown
+        if (data.status) {
+          const { shirt, pant, shoes, id_card } = data.status;
+          const items = [
+            { name: 'Shirt', ok: shirt?.ok },
+            { name: 'Pant', ok: pant?.ok },
+            { name: 'Shoes', ok: shoes?.ok },
+            { name: 'ID Card', ok: id_card?.ok },
+          ];
+          statusDiv.innerHTML = items.map(i => `<div class="pill ${i.ok ? 'ok' : 'bad'}">${i.ok ? '✓' : '✗'} ${i.name}</div>`).join(' ');
+        }
+
+        // Show detections
+        if (Array.isArray(data.detections)) {
+          detectionsDiv.innerHTML = data.detections.map(d => {
+            const box = d.box ? d.box.join(', ') : '';
+            return `<div class="pill">${d.class} (${d.color ?? 'n/a'}) [${box}]</div>`;
+          }).join('');
+        }
+
+        // Show processed image
+        if (data.output_image) {
+          outputImg.src = data.output_image;
+        }
+      } catch (err) {
+        loading.classList.add('hidden');
+        alert('Error processing image. Check server logs.');
+        console.error(err);
+      }
+    });
+  </script>
+</body>
+</html>
