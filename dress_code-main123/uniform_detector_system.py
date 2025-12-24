@@ -21,31 +21,32 @@ class UniformDetector:
     
     def __init__(self, model_path="runs/train/uniform_detector_yolov11_cpu/weights/best.pt", serial_port=None, baud=9600, enable_serial=True):
         """Initialize the detector with trained model"""
-        self.model_path = model_path
-        
-        # Get script directory for relative path resolution
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        # Check if model exists
-        if os.path.exists(model_path):
-            self.model = YOLO(model_path)
-            print(f"✅ Model loaded: {model_path}")
-        elif os.path.exists("runs/train/uniform_detector_yolov11_cpu/weights/best.pt"):
-            fallback_path = "runs/train/uniform_detector_yolov11_cpu/weights/best.pt"
-            self.model = YOLO(fallback_path)
-            print(f"✅ Fallback model loaded: {fallback_path}")
-        elif os.path.exists(os.path.join(script_dir, "yolo11n.pt")):
-            fallback_path = os.path.join(script_dir, "yolo11n.pt")
-            self.model = YOLO(fallback_path)
-            print(f"✅ Fallback model loaded: {fallback_path}")
-        elif os.path.exists(os.path.join(script_dir, "yolov8m.pt")):
-            fallback_path = os.path.join(script_dir, "yolov8m.pt")
-            self.model = YOLO(fallback_path)
-            print(f"✅ Fallback model loaded: {fallback_path}")
-        else:
-            print(f"⚠️  Model not found at {model_path}")
+
+        # Always resolve relative paths against the script directory so running from elsewhere still works
+        resolved_model_path = model_path
+        if not os.path.isabs(model_path):
+            resolved_model_path = os.path.join(script_dir, model_path)
+        self.model_path = resolved_model_path
+
+        # Check for the first available weights file
+        candidates = [
+            resolved_model_path,
+            os.path.join(script_dir, "runs/train/uniform_detector_yolov11_cpu/weights/best.pt"),
+            os.path.join(script_dir, "yolo11n.pt"),
+            os.path.join(script_dir, "yolov8m.pt"),
+        ]
+
+        self.model = None
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                self.model = YOLO(candidate)
+                print(f"✅ Model loaded: {candidate}")
+                break
+
+        if self.model is None:
+            print(f"⚠️  Model not found at {resolved_model_path}")
             print("Please run training first or provide --model path")
-            self.model = None
         
         # Serial link setup (optional)
         self.enable_serial = enable_serial and (serial is not None)
@@ -191,50 +192,33 @@ class UniformDetector:
         normalized = set()
         counts = defaultdict(int)
 
-        for class_name in detected_classes:
-            class_lower = class_name.lower()
+        # When raw_counts is provided from YOLO boxes, rely on it to avoid double-counting
+        source_counts = raw_counts if raw_counts else defaultdict(int)
+        if not raw_counts:
+            for class_name in detected_classes:
+                source_counts[class_name] += 1
 
-            if 'identity' in class_lower or 'card' in class_lower or 'id' in class_lower:
+        for raw_name, cnt in source_counts.items():
+            ln = raw_name.lower()
+
+            if 'identity' in ln or 'card' in ln or 'id' in ln:
                 normalized.add('Identity Card')
-                counts['Identity Card'] += 1
-            elif class_lower == 'shirt':
+                counts['Identity Card'] += cnt
+            elif ln == 'shirt':
                 normalized.add('Shirt')
-                counts['Shirt'] += 1
-            elif class_lower == 'top':
+                counts['Shirt'] += cnt
+            elif ln == 'top':
                 normalized.add('top')
-                counts['top'] += 1
-            elif class_lower == 'pant':
+                counts['top'] += cnt
+            elif ln == 'pant':
                 normalized.add('pant')
-                counts['pant'] += 1
-            elif class_lower == 'shoes':
+                counts['pant'] += cnt
+            elif ln == 'shoes':
                 normalized.add('shoes')
-                counts['shoes'] += 1
-            elif class_lower == 'slippers':
+                counts['shoes'] += cnt
+            elif ln == 'slippers':
                 normalized.add('slippers')
-                counts['slippers'] += 1
-
-        # If raw_counts provided (from result.boxes), include those normalized counts too
-        if raw_counts:
-            for raw_name, cnt in raw_counts.items():
-                ln = raw_name.lower()
-                if 'identity' in ln or 'card' in ln or 'id' in ln:
-                    counts['Identity Card'] += cnt
-                    normalized.add('Identity Card')
-                elif ln == 'shirt':
-                    counts['Shirt'] += cnt
-                    normalized.add('Shirt')
-                elif ln == 'top':
-                    counts['top'] += cnt
-                    normalized.add('top')
-                elif ln == 'pant':
-                    counts['pant'] += cnt
-                    normalized.add('pant')
-                elif ln == 'shoes':
-                    counts['shoes'] += cnt
-                    normalized.add('shoes')
-                elif ln == 'slippers':
-                    counts['slippers'] += cnt
-                    normalized.add('slippers')
+                counts['slippers'] += cnt
 
         return normalized, counts
     
@@ -311,54 +295,55 @@ class UniformDetector:
         print("📷 Webcam detection started. Press 'q' to quit, 'c' to capture...")
         frame_count = 0
         
-        while True:
-            ret, frame = cap.read()
-            
-            if not ret:
-                print("❌ Failed to read frame")
-                break
-            
-            frame_count += 1
-            
-            # Run detection every 5 frames for efficiency
-            if frame_count % 5 == 0:
-                result = self.detect_uniform(frame)
+        try:
+            while True:
+                ret, frame = cap.read()
                 
-                # Display result on frame
-                status = result['uniform_status']
-                message = result['message']
-                
-                # Color based on status
-                color = (0, 255, 0) if status == 1 else (0, 0, 255) if status == 0 else (0, 165, 255)
-                
-                # Add text to frame
-                cv2.putText(frame, message, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
-                           1, color, 2)
-                cv2.putText(frame, f"Status: {status}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX,
-                           1, color, 2)
-                
-                # Print to console
-                print(f"\nFrame {frame_count}: {message}")
-                print(f"Detected: {result['detected_items']}")
-                # Terminal Output flag: 1 for complete, 0 otherwise
-                flag = 1 if status == 1 else 0
-                print(f"Terminal Output: {flag}")
-                # Send flag to Arduino
-                self._send_flag(status)
-            
-            if display:
-                cv2.imshow('Uniform Detection', frame)
-                
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
+                if not ret:
+                    print("❌ Failed to read frame")
                     break
-                elif key == ord('c'):
-                    cv2.imwrite(f"uniform_detection_{frame_count}.jpg", frame)
-                    print(f"✅ Captured: uniform_detection_{frame_count}.jpg")
-        
-        cap.release()
-        cv2.destroyAllWindows()
-        print("📷 Webcam detection stopped")
+                
+                frame_count += 1
+                
+                # Run detection every 5 frames for efficiency
+                if frame_count % 5 == 0:
+                    result = self.detect_uniform(frame)
+                    
+                    # Display result on frame
+                    status = result['uniform_status']
+                    message = result['message']
+                    
+                    # Color based on status
+                    color = (0, 255, 0) if status == 1 else (0, 0, 255) if status == 0 else (0, 165, 255)
+                    
+                    # Add text to frame
+                    cv2.putText(frame, message, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                               1, color, 2)
+                    cv2.putText(frame, f"Status: {status}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX,
+                               1, color, 2)
+                    
+                    # Print to console
+                    print(f"\nFrame {frame_count}: {message}")
+                    print(f"Detected: {result['detected_items']}")
+                    # Terminal Output flag: 1 for complete, 0 otherwise
+                    flag = 1 if status == 1 else 0
+                    print(f"Terminal Output: {flag}")
+                    # Send flag to Arduino
+                    self._send_flag(status)
+                
+                if display:
+                    cv2.imshow('Uniform Detection', frame)
+                    
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        break
+                    elif key == ord('c'):
+                        cv2.imwrite(f"uniform_detection_{frame_count}.jpg", frame)
+                        print(f"✅ Captured: uniform_detection_{frame_count}.jpg")
+        finally:
+            cap.release()
+            cv2.destroyAllWindows()
+            print("📷 Webcam detection stopped")
     
     def detect_from_video(self, video_path, output_path="uniform_detection_output.mp4"):
         """
