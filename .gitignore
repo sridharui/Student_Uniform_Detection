@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.swp
+
+# Virtual environments
+.env/
+.venv*/
+venv/
+env/
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# Project artifacts (large or generated)
+dress_code-main123/runs/
+dress_code-main123/uploads/
+
+# Videos and large media
+dress_code-main123/*.mp4
+dress_code-main123/*.avi
+dress_code-main123/*.mov
+
+# Model weights
+dress_code-main123/*.pt
+dress_code-main123/runs/**/weights/
+
+# Roboflow dataset splits (large)
+dress_code-main123/scrap_files/**/train/
+dress_code-main123/scrap_files/**/valid/
+dress_code-main123/scrap_files/**/test/
