@@ -56,20 +56,25 @@ class UniformDetector:
         self._init_serial_link()
 
         # Define uniform components
-        # Based on Complete_Uniform.v3i.yolov12 classes
+        # For Boys: ID Card + Shirt + Pant + Shoes
+        # For Girls: ID Card + Top + Pant + Shoes
         self.REQUIRED_BOYS = {
-            'Identity Card',  # or 'identity card'
+            'Identity Card',
             'Shirt',
             'pant',
             'shoes'
         }
         
         self.REQUIRED_GIRLS = {
-            'Identity Card',  # or 'identity card'
+            'Identity Card',
             'top',
             'pant',
             'shoes'
         }
+        
+        # Gender-specific classes
+        self.BOYS_CLASSES = {'Shirt'}
+        self.GIRLS_CLASSES = {'top'}
         
         # All possible class names from the dataset
         self.VALID_CLASSES = {
@@ -77,7 +82,18 @@ class UniformDetector:
             'shoes', 'slippers', 'top'
         }
         
-        self.CONF_THRESHOLD = 0.5
+        # Confidence thresholds per class for better accuracy
+        self.CONF_THRESHOLDS = {
+            'Identity Card': 0.50,
+            'identity card': 0.50,
+            'Shirt': 0.55,
+            'top': 0.55,
+            'pant': 0.50,
+            'shoes': 0.50,
+            'slippers': 0.50
+        }
+        
+        self.CONF_THRESHOLD = 0.50  # Default threshold
 
     def _init_serial_link(self):
         """Initialize serial connection to Arduino if available"""
@@ -147,12 +163,13 @@ class UniformDetector:
         else:
             image = image_source
         
-        # Run inference
-        results = self.model(image, conf=self.CONF_THRESHOLD, verbose=False)
+        # Run inference with lower confidence to catch all potential detections
+        results = self.model(image, conf=0.3, verbose=False)
         
-        # Extract detections
+        # Extract detections with class-specific thresholds
         detections = defaultdict(int)
         detected_classes = []
+        detection_details = []  # Store confidence scores for better filtering
         
         if results and len(results) > 0:
             result = results[0]
@@ -162,24 +179,40 @@ class UniformDetector:
                     class_name = result.names[int(cls_id)]
                     confidence = float(conf)
                     
-                    detected_classes.append(class_name)
-                    detections[class_name] += 1
+                    # Apply class-specific threshold
+                    class_threshold = self.CONF_THRESHOLDS.get(class_name, self.CONF_THRESHOLD)
                     
-                    print(f"  ✓ Detected: {class_name} (confidence: {confidence:.2f})")
+                    if confidence >= class_threshold:
+                        detected_classes.append(class_name)
+                        detections[class_name] += 1
+                        detection_details.append({
+                            'class': class_name,
+                            'confidence': confidence,
+                            'box': box.cpu().numpy() if hasattr(box, 'cpu') else box
+                        })
+                        print(f"  ✓ Detected: {class_name} (confidence: {confidence:.2f}, threshold: {class_threshold})")
+                    else:
+                        print(f"  ✗ Filtered out: {class_name} (confidence: {confidence:.2f} < threshold: {class_threshold})")
         
         # Normalize class names (handle variations) and keep counts
         normalized_detections, normalized_counts = self._normalize_detections(detected_classes, detections)
 
-        # Check for complete uniform (prefer 'top' -> girls, 'Shirt' -> boys)
-        is_complete, missing_items, uniform_type = self._check_complete_uniform(normalized_detections, normalized_counts)
+        # Detect gender and check for complete uniform
+        detected_gender = self._detect_gender(normalized_detections, normalized_counts)
+        is_complete, missing_items, uniform_type = self._check_complete_uniform_v2(
+            normalized_detections, normalized_counts, detected_gender
+        )
         
         return {
             'uniform_status': 1 if is_complete else 0,
             'is_complete': is_complete,
             'uniform_type': uniform_type,
+            'detected_gender': detected_gender,
             'detected_items': list(normalized_detections),
             'missing_items': missing_items,
+            'detection_counts': dict(normalized_counts),
             'raw_detections': dict(detections),
+            'detection_details': detection_details,
             'message': self._generate_message(is_complete, missing_items, uniform_type),
             'image': image
         }
@@ -222,8 +255,67 @@ class UniformDetector:
 
         return normalized, counts
     
+    def _detect_gender(self, detections, counts):
+        """
+        Detect if the person is likely a boy or girl based on clothing
+        Returns: 'BOYS', 'GIRLS', or 'UNKNOWN'
+        """
+        # Priority: explicit gender-specific classes
+        if 'top' in detections and 'Shirt' not in detections:
+            return 'GIRLS'
+        elif 'Shirt' in detections and 'top' not in detections:
+            return 'BOYS'
+        elif 'top' in detections and 'Shirt' in detections:
+            # Both detected - use confidence counts
+            top_count = counts.get('top', 0)
+            shirt_count = counts.get('Shirt', 0)
+            if top_count > shirt_count:
+                return 'GIRLS'
+            elif shirt_count > top_count:
+                return 'BOYS'
+        
+        return 'UNKNOWN'
+    
+    def _check_complete_uniform_v2(self, detections, counts, detected_gender):
+        """
+        Enhanced uniform checking with gender prioritization
+        Returns: (is_complete, missing_items, uniform_type)
+        """
+        # If gender is clearly detected, use that requirement set
+        if detected_gender == 'GIRLS':
+            girls_complete = self.REQUIRED_GIRLS.issubset(detections)
+            missing_girls = list(self.REQUIRED_GIRLS - detections)
+            status = "GIRLS"
+            return (True, missing_girls, status) if girls_complete else (False, missing_girls, f"{status} (incomplete)")
+        
+        elif detected_gender == 'BOYS':
+            boys_complete = self.REQUIRED_BOYS.issubset(detections)
+            missing_boys = list(self.REQUIRED_BOYS - detections)
+            status = "BOYS"
+            return (True, missing_boys, status) if boys_complete else (False, missing_boys, f"{status} (incomplete)")
+        
+        else:
+            # Unknown gender - check both possibilities
+            boys_complete = self.REQUIRED_BOYS.issubset(detections)
+            girls_complete = self.REQUIRED_GIRLS.issubset(detections)
+
+            missing_boys = self.REQUIRED_BOYS - detections
+            missing_girls = self.REQUIRED_GIRLS - detections
+
+            if boys_complete:
+                return True, list(missing_boys), "BOYS"
+            elif girls_complete:
+                return True, list(missing_girls), "GIRLS"
+            else:
+                # Choose the type with fewer missing items
+                if len(missing_boys) <= len(missing_girls):
+                    return False, list(missing_boys), "BOYS (incomplete)"
+                else:
+                    return False, list(missing_girls), "GIRLS (incomplete)"
+    
     def _check_complete_uniform(self, detections, counts=None):
         """
+        Legacy method - kept for backward compatibility
         Check if detected items form a complete uniform
         Returns: (is_complete, missing_items, uniform_type)
         """
@@ -293,6 +385,11 @@ class UniformDetector:
             return
         
         print("📷 Webcam detection started. Press 'q' to quit, 'c' to capture...")
+        print("=" * 80)
+        print("DETECTION GUIDELINES:")
+        print("  BOYS: ID Card + Shirt + Pant + Shoes")
+        print("  GIRLS: ID Card + Top + Pant + Shoes")
+        print("=" * 80)
         frame_count = 0
         
         try:
@@ -312,27 +409,37 @@ class UniformDetector:
                     # Display result on frame
                     status = result['uniform_status']
                     message = result['message']
+                    detected_gender = result.get('detected_gender', 'UNKNOWN')
+                    detected_items = result.get('detected_items', [])
+                    missing_items = result.get('missing_items', [])
                     
                     # Color based on status
                     color = (0, 255, 0) if status == 1 else (0, 0, 255) if status == 0 else (0, 165, 255)
                     
-                    # Add text to frame
+                    # Add text to frame with enhanced info
                     cv2.putText(frame, message, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
-                               1, color, 2)
-                    cv2.putText(frame, f"Status: {status}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX,
-                               1, color, 2)
+                               0.8, color, 2)
+                    cv2.putText(frame, f"Gender: {detected_gender}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX,
+                               0.7, (255, 200, 0), 2)
+                    cv2.putText(frame, f"Detected: {', '.join(detected_items)}", (10, 110), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 200, 255), 1)
+                    if missing_items:
+                        cv2.putText(frame, f"Missing: {', '.join(missing_items)}", (10, 150), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
                     
-                    # Print to console
-                    print(f"\nFrame {frame_count}: {message}")
-                    print(f"Detected: {result['detected_items']}")
-                    # Terminal Output flag: 1 for complete, 0 otherwise
-                    flag = 1 if status == 1 else 0
-                    print(f"Terminal Output: {flag}")
+                    # Terminal Output
+                    print(f"\n[Frame {frame_count}]")
+                    print(f"  Gender Detected: {detected_gender}")
+                    print(f"  {message}")
+                    print(f"  Detected Items: {detected_items}")
+                    print(f"  Missing Items: {missing_items}")
+                    print(f"  Status Flag: {1 if status == 1 else 0}")
+                    
                     # Send flag to Arduino
                     self._send_flag(status)
                 
                 if display:
-                    cv2.imshow('Uniform Detection', frame)
+                    cv2.imshow('Uniform Detection - Press Q to quit, C to capture', frame)
                     
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord('q'):
@@ -344,6 +451,7 @@ class UniformDetector:
             cap.release()
             cv2.destroyAllWindows()
             print("📷 Webcam detection stopped")
+            print("=" * 80)
     
     def detect_from_video(self, video_path, output_path="uniform_detection_output.mp4"):
         """
