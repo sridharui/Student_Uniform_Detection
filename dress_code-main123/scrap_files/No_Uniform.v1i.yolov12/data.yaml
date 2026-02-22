@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../train/images
+test: ../train/images
+
+nc: 6
+names: ['Identitycard', 'Pant', 'Shirt', 'Shoes', 'Top', 'sandals']
+
+roboflow:
+  workspace: bhaskar-wmezd
+  project: my-first-project-1yh56
+  version: 1
+  license: Private
+  url: https://app.roboflow.com/bhaskar-wmezd/my-first-project-1yh56/1
